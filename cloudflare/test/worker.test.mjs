@@ -22,22 +22,47 @@ let persistDir;
 let server;
 
 async function api(method, pathname, { body, token } = {}) {
-	const headers = { 'Content-Type': 'application/json' };
+	// like a browser on the same origin; better-auth rejects auth POSTs without one (CSRF protection)
+	const headers = { 'Content-Type': 'application/json', 'Origin': BASE };
 	if (token) headers.Authorization = `Bearer ${token}`;
-	const init = { method, headers };
+	const init = { method, headers, redirect: 'manual' };
 	if (body) init.body = JSON.stringify(body);
 	const res = await fetch(BASE + pathname, init);
-	return { status: res.status, body: await res.json() };
+	const text = await res.text();
+	return { status: res.status, headers: res.headers, body: text ? JSON.parse(text) : null };
+}
+
+/**
+ * Signs up through better-auth (email/password, or a guest session) and
+ * claims a Showdown name. Returns the bearer session token.
+ */
+async function account(name, { guest = false } = {}) {
+	const signIn = guest ?
+		await api('POST', '/api/auth/sign-in/anonymous', { body: {} }) :
+		await api('POST', '/api/auth/sign-up/email', {
+			body: { name, email: `${name.toLowerCase().replace(/\W/g, '')}@example.com`, password: 'correct horse battery staple' },
+		});
+	assert.equal(signIn.status, 200, JSON.stringify(signIn.body));
+	const token = signIn.headers.get('set-auth-token');
+	assert(token, 'better-auth bearer plugin returns the session token');
+	const claimed = await api('POST', '/api/users', { token, body: { name } });
+	assert.equal(claimed.status, 201, JSON.stringify(claimed.body));
+	return { ...claimed.body, token };
 }
 
 function connect(battleId, token) {
-	return new WebSocket(`ws://127.0.0.1:${PORT}/api/battles/${battleId}/ws` + (token ? `?token=${token}` : ''));
+	return new WebSocket(`ws://127.0.0.1:${PORT}/api/battles/${battleId}/ws` + (token ? `?token=${encodeURIComponent(token)}` : ''));
 }
 
 async function startServer() {
 	server = spawn(WRANGLER, [
 		'dev', '--port', String(PORT), '--ip', '127.0.0.1', '--persist-to', persistDir,
 		'--show-interactive-dev-session=false',
+		'--var', `BETTER_AUTH_URL:${BASE}`,
+		'--var', 'BETTER_AUTH_SECRET:test-secret-test-secret-test-secret-0123',
+		'--var', 'EMAIL_PASSWORD_LOGIN:true',
+		'--var', 'GOOGLE_CLIENT_ID:test-client-id.apps.googleusercontent.com',
+		'--var', 'GOOGLE_CLIENT_SECRET:test-client-secret',
 	], { cwd: HERE, env, stdio: 'ignore' });
 	for (let i = 0; i < 120; i++) {
 		try {
@@ -133,19 +158,60 @@ describe('Cloudflare Worker', function () {
 		assert.match(invalid.body.error, /Mewtwo/);
 	});
 
-	it('registers users', async () => {
-		const res = await api('POST', '/api/users', { body: { name: 'Taken Name' } });
-		assert.equal(res.status, 201);
-		assert.equal(res.body.userid, 'takenname');
-		assert.equal((await api('POST', '/api/users', { body: { name: 'takenname' } })).status, 409);
-		assert.equal((await api('GET', '/api/me', { token: res.body.token })).body.name, 'Taken Name');
+	it('serves the web client and auth config', async () => {
+		const page = await fetch(BASE + '/');
+		assert.equal(page.status, 200);
+		assert.match(await page.text(), /Sign in with Google/);
+		const config = await api('GET', '/api/config');
+		assert.deepEqual(config.body.providers, { google: true, guest: true, emailPassword: true });
+	});
+
+	it('starts the Google OAuth flow', async () => {
+		const res = await api('POST', '/api/auth/sign-in/social', { body: { provider: 'google', callbackURL: `${BASE}/` } });
+		assert.equal(res.status, 200, JSON.stringify(res.body));
+		const url = new URL(res.body.url);
+		assert.equal(url.origin, 'https://accounts.google.com');
+		assert.equal(url.searchParams.get('client_id'), 'test-client-id.apps.googleusercontent.com');
+		assert.equal(url.searchParams.get('redirect_uri'), `${BASE}/api/auth/callback/google`);
+	});
+
+	it('claims names for signed-in accounts', async () => {
+		assert.equal((await api('POST', '/api/users', { body: { name: 'Nobody' } })).status, 401);
+
+		const taken = await account('Taken Name');
+		assert.equal(taken.userid, 'takenname');
+		const me = (await api('GET', '/api/me', { token: taken.token })).body;
+		assert.equal(me.name, 'Taken Name');
+		assert.equal(me.email, 'takenname@example.com');
+		assert.equal(me.guest, false);
+		// one name per account
+		assert.equal((await api('POST', '/api/users', { token: taken.token, body: { name: 'Other' } })).status, 409);
+
+		const guest = (await api('POST', '/api/auth/sign-in/anonymous', { body: {} })).headers.get('set-auth-token');
+		assert.equal((await api('GET', '/api/me', { token: guest })).body.hasName, false);
+		// battling needs a name
+		assert.equal((await api('POST', '/api/battles', { token: guest, body: { format: 'gen9randombattle' } })).status, 403);
+		assert.equal((await api('POST', '/api/users', { token: guest, body: { name: 'takenname' } })).status, 409);
 		assert.equal((await api('GET', '/api/me', { token: 'nope' })).status, 401);
 	});
 
+	it('keeps guests out of rated battles', async () => {
+		const host = await account('Rated Host');
+		const visitor = await account('Visitor', { guest: true });
+		const rated = (await api('POST', '/api/battles', { token: host.token, body: { format: 'gen9randombattle' } })).body;
+		const join = await api('POST', `/api/battles/${rated.id}/join`, { token: visitor.token, body: {} });
+		assert.equal(join.status, 400);
+		assert.match(join.body.error, /Rated battles need/);
+
+		const created = await api('POST', '/api/battles', { token: visitor.token, body: { format: 'gen9randombattle' } });
+		assert.equal(created.status, 201);
+		assert.equal((await api('GET', `/api/battles/${created.body.id}`)).body.rated, false);
+	});
+
 	it('plays a rated battle to completion and updates the ladder', async () => {
-		const alice = (await api('POST', '/api/users', { body: { name: 'Alice' } })).body;
-		const bob = (await api('POST', '/api/users', { body: { name: 'Bob' } })).body;
-		const carol = (await api('POST', '/api/users', { body: { name: 'Carol' } })).body;
+		const alice = await account('Alice');
+		const bob = await account('Bob');
+		const carol = await account('Carol');
 
 		const created = await api('POST', '/api/battles', {
 			token: alice.token, body: { format: 'gen9randombattle', opponent: 'Bob' },
@@ -191,8 +257,8 @@ describe('Cloudflare Worker', function () {
 	});
 
 	it('lets a player forfeit, without touching the ladder in unrated battles', async () => {
-		const dave = (await api('POST', '/api/users', { body: { name: 'Dave' } })).body;
-		const erin = (await api('POST', '/api/users', { body: { name: 'Erin' } })).body;
+		const dave = await account('Dave');
+		const erin = await account('Erin');
 		const { id } = (await api('POST', '/api/battles', {
 			token: dave.token, body: { format: 'gen9randombattle', rated: false },
 		})).body;
@@ -215,7 +281,7 @@ describe('Cloudflare Worker', function () {
 	});
 
 	it('rejects choices from spectators', async () => {
-		const frank = (await api('POST', '/api/users', { body: { name: 'Frank' } })).body;
+		const frank = await account('Frank');
 		const { id } = (await api('POST', '/api/battles', {
 			token: frank.token, body: { format: 'gen9randombattle' },
 		})).body;
@@ -231,8 +297,8 @@ describe('Cloudflare Worker', function () {
 	});
 
 	it('resumes a battle from its input log after a restart', async () => {
-		const gina = (await api('POST', '/api/users', { body: { name: 'Gina' } })).body;
-		const hank = (await api('POST', '/api/users', { body: { name: 'Hank' } })).body;
+		const gina = await account('Gina');
+		const hank = await account('Hank');
 		const { id } = (await api('POST', '/api/battles', {
 			token: gina.token, body: { format: 'gen9randombattle', rated: false },
 		})).body;

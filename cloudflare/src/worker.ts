@@ -3,9 +3,12 @@
  *
  * HTTP API (JSON):
  *
+ *   GET  /                                web client (sign in, lobby, battles, ladder)
+ *   *    /api/auth/*                      better-auth (sign in with Google / as guest, sessions)
+ *   GET  /api/config                      enabled sign-in methods
  *   GET  /api/formats                     list of supported formats
- *   POST /api/users          {name}       register a name, returns a bearer token
- *   GET  /api/me                          the logged-in user
+ *   POST /api/users          {name}       claim a Showdown name for the signed-in account
+ *   GET  /api/me                          the signed-in account and its name
  *   POST /api/teams/validate {format, team}
  *   POST /api/teams/generate {format}     random team for Random Battle formats
  *   POST /api/battles        {format, team?, opponent?, rated?}   create a battle (you are p1)
@@ -15,14 +18,16 @@
  *   GET  /api/battles/:id/ws              WebSocket for playing or spectating
  *   GET  /api/ladder/:format              ladder for a format
  *
- * Authenticated endpoints take `Authorization: Bearer <token>` (or `?token=`).
+ * Authenticated endpoints use the better-auth session cookie, or the session
+ * token as `Authorization: Bearer <token>` (or `?token=` for WebSockets).
  */
 
 import { toID } from '../../sim/dex';
-import { authenticate, hashToken, randomToken, validateName } from './auth';
+import { enabledProviders, getAuth, getViewer, validateName, type Viewer } from './auth';
 import { createUser, getBattle, getLadder, listBattles, type UserRow } from './db';
 import type { Env } from './env';
 import { generateTeam, listFormats, validateTeam } from './sim';
+import CLIENT_HTML from './client/index.html';
 
 export { BattleRoom } from './battle-room';
 
@@ -57,10 +62,22 @@ async function readBody(request: Request): Promise<Record<string, unknown>> {
 	throw new HttpError(400, `Expected a JSON object body.`);
 }
 
-async function requireUser(request: Request, env: Env): Promise<UserRow> {
-	const user = await authenticate(request, env.DB);
-	if (!user) throw new HttpError(401, `You must be logged in (Authorization: Bearer <token>).`);
-	return user;
+async function requireViewer(request: Request, env: Env): Promise<Viewer> {
+	const viewer = await getViewer(request, env);
+	if (!viewer) throw new HttpError(401, `You must be signed in.`);
+	return viewer;
+}
+
+/** A signed-in account that has claimed a Showdown name */
+async function requirePlayer(request: Request, env: Env): Promise<UserRow & { guest: boolean }> {
+	const viewer = await requireViewer(request, env);
+	if (!viewer.profile) throw new HttpError(403, `Choose a name first (POST /api/users).`);
+	return { ...viewer.profile, guest: viewer.isGuest };
+}
+
+function randomId(length: number) {
+	const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+	return [...crypto.getRandomValues(new Uint8Array(length))].map(byte => alphabet[byte % alphabet.length]).join('');
 }
 
 function battleStub(env: Env, id: string) {
@@ -83,36 +100,43 @@ async function route(request: Request, env: Env): Promise<Response> {
 	const parts = url.pathname.split('/').filter(Boolean);
 	const method = request.method;
 
+	// better-auth handles its own CORS (trustedOrigins)
+	if (parts[0] === 'api' && parts[1] === 'auth') return getAuth(env).handler(request);
 	if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
-	if (!parts.length) {
-		return json({
-			name: 'Pokémon Showdown (Cloudflare Workers)',
-			endpoints: ['/api/formats', '/api/users', '/api/battles', '/api/ladder/:format'],
-		});
+	if (!parts.length && method === 'GET') {
+		return new Response(CLIENT_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
 	}
 	if (parts[0] !== 'api') throw new HttpError(404, `Not found.`);
 	const [, resource, id, action] = parts;
 
 	switch (resource) {
+	case 'config':
+		if (method === 'GET' && !id) return json({ providers: enabledProviders(env) });
+		break;
+
 	case 'formats':
 		if (method === 'GET' && !id) return json(listFormats());
 		break;
 
 	case 'users':
 		if (method === 'POST' && !id) {
+			const viewer = await requireViewer(request, env);
+			if (viewer.profile) throw new HttpError(409, `You already have the name "${viewer.profile.name}".`);
 			const name = validateName((await readBody(request)).name);
 			if (!name) throw new HttpError(400, `Names must be 1-18 characters and contain a letter or number.`);
 			const userid = toID(name);
-			const token = randomToken();
-			if (!await createUser(env.DB, userid, name, await hashToken(token))) {
-				throw new HttpError(409, `The name "${name}" is already registered.`);
+			if (!await createUser(env.DB, userid, name, viewer.authUserId)) {
+				throw new HttpError(409, `The name "${name}" is already taken.`);
 			}
-			return json({ userid, name, token }, 201);
+			return json({ userid, name }, 201);
 		}
 		break;
 
 	case 'me':
-		if (method === 'GET' && !id) return json(await requireUser(request, env));
+		if (method === 'GET' && !id) {
+			const viewer = await requireViewer(request, env);
+			return json({ ...viewer.profile, email: viewer.email, guest: viewer.isGuest, hasName: !!viewer.profile });
+		}
 		break;
 
 	case 'teams':
@@ -144,14 +168,14 @@ async function route(request: Request, env: Env): Promise<Response> {
 				}));
 			}
 			if (method === 'POST') {
-				const user = await requireUser(request, env);
+				const user = await requirePlayer(request, env);
 				const body = await readBody(request);
-				const battleId = `${toID(body.format)}${randomToken(9).toLowerCase().replace(/[^a-z0-9]/g, '')}`.slice(0, 64);
+				const battleId = `${toID(body.format).slice(0, 48)}${randomId(12)}`;
 				const players = unwrap(await battleStub(env, battleId).create({
 					id: battleId,
 					formatid: typeof body.format === 'string' ? body.format : '',
 					rated: body.rated !== false,
-					player: { userid: user.userid, name: user.name },
+					player: { userid: user.userid, name: user.name, guest: user.guest },
 					team: body.team,
 					invited: toID(body.opponent) || null,
 				}));
@@ -166,15 +190,16 @@ async function route(request: Request, env: Env): Promise<Response> {
 			return json({ ...row, ...await battleStub(env, id).info() });
 		}
 		if (action === 'join' && method === 'POST') {
-			const user = await requireUser(request, env);
+			const user = await requirePlayer(request, env);
 			const body = await readBody(request);
-			const players = unwrap(await battleStub(env, id).join({ userid: user.userid, name: user.name }, body.team));
+			const player = { userid: user.userid, name: user.name, guest: user.guest };
+			const players = unwrap(await battleStub(env, id).join(player, body.team));
 			return json({ id, players });
 		}
 		if (action === 'ws' && method === 'GET') {
 			if (request.headers.get('Upgrade') !== 'websocket') throw new HttpError(426, `Expected a WebSocket upgrade.`);
-			// Spectators may connect anonymously; a valid token identifies players
-			const user = await authenticate(request, env.DB);
+			// Spectators may connect without signing in; a session identifies players
+			const user = (await getViewer(request, env))?.profile;
 			const headers = new Headers(request.headers);
 			headers.delete('X-PS-Userid');
 			headers.delete('X-PS-Name');

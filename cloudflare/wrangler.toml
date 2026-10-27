@@ -24,8 +24,8 @@ cpu_ms = 30000
 [[d1_databases]]
 binding = "DB"
 database_name = "pokemon-showdown"
-# Replace with the id printed by `wrangler d1 create pokemon-showdown`
-database_id = "00000000-0000-0000-0000-000000000000"
+# No database_id: `wrangler deploy` creates the database on first deploy
+# (automatic provisioning). To use an existing one, add its database_id here.
 migrations_dir = "migrations"
 
 [[durable_objects.bindings]]
@@ -35,6 +35,13 @@ class_name = "BattleRoom"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["BattleRoom"]
+
+# Secrets (set with `wrangler secret put NAME`, or .dev.vars locally):
+#   BETTER_AUTH_SECRET    random string, at least 32 characters
+#   GOOGLE_CLIENT_ID      OAuth client from Google Cloud Console
+#   GOOGLE_CLIENT_SECRET
+# Optional vars: BETTER_AUTH_URL (public URL; inferred from requests if unset),
+# TRUSTED_ORIGINS, EMAIL_PASSWORD_LOGIN ("true" for local testing only)
 
 [observability]
 enabled = true

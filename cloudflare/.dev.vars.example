@@ -1,0 +1,9 @@
+# Copy to .dev.vars for `npm run dev` (never commit .dev.vars)
+BETTER_AUTH_SECRET=change-me-to-a-random-string-of-32-plus-characters
+BETTER_AUTH_URL=http://localhost:8787
+# Google Cloud Console -> APIs & Services -> Credentials -> OAuth client ID (Web application)
+# Authorized redirect URI: http://localhost:8787/api/auth/callback/google
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+# Lets you create test accounts without Google (local development only)
+EMAIL_PASSWORD_LOGIN=true

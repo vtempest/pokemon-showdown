@@ -222,6 +222,7 @@ export async function build({ minify = true } = {}) {
 		external: ['node:*', 'cloudflare:*'],
 		alias: { path: 'node:path', crypto: 'node:crypto' },
 		tsconfig: path.join(HERE, 'tsconfig.json'),
+		loader: { '.html': 'text' },
 		minify,
 		keepNames: true,
 		sourcemap: 'external',

@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pokémon Showdown</title>
+<style>
+:root {
+	--bg: #f4f5f7; --panel: #fff; --text: #1d2330; --muted: #677087; --border: #d9dde5;
+	--accent: #2f6fde; --accent-text: #fff; --danger: #c43d3d; --good: #2e8b57; --chat: #6b4fbb;
+	--hp-high: #3cb371; --hp-mid: #e0b33a; --hp-low: #d9534f;
+	color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #12151c; --panel: #1b2029; --text: #e6e9ef; --muted: #98a0b3; --border: #2e3542;
+		--accent: #5b8ff0; --accent-text: #0c1018; --danger: #e06a6a; --good: #5cc28a; --chat: #a993ee;
+		color-scheme: dark;
+	}
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+header h1 { font-size: 18px; margin: 0; flex: 1; }
+header h1 a { color: inherit; text-decoration: none; }
+main { max-width: 1000px; margin: 0 auto; padding: 16px; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.panel h2 { margin: 0 0 12px; font-size: 16px; }
+button, select, input, textarea { font: inherit; color: inherit; }
+button { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+button.danger { background: var(--danger); color: #fff; }
+button:disabled { opacity: .45; cursor: default; }
+select, input, textarea { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; width: 100%; }
+textarea { min-height: 140px; font-family: ui-monospace, monospace; font-size: 13px; }
+label { display: block; margin-bottom: 10px; color: var(--muted); font-size: 13px; }
+label > input, label > select, label > textarea { margin-top: 4px; color: var(--text); }
+label.inline { display: flex; align-items: center; gap: 6px; }
+label.inline input { width: auto; margin: 0; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.muted { color: var(--muted); }
+.error { color: var(--danger); white-space: pre-wrap; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+a { color: var(--accent); }
+.battle { display: grid; grid-template-columns: 1fr 300px; gap: 16px; }
+@media (max-width: 760px) { .battle { grid-template-columns: 1fr; } }
+.field { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+.mon { border: 1px solid var(--border); border-radius: 8px; padding: 10px; min-height: 64px; }
+.mon .name { font-weight: 600; }
+.hp { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; margin-top: 6px; }
+.hp > div { height: 100%; background: var(--hp-high); transition: width .3s; }
+.log { height: 420px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 14px; }
+.log div { margin: 1px 0; }
+.log .turn { font-weight: 700; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 6px; }
+.log .minor { color: var(--muted); }
+.log .chat { color: var(--chat); }
+.log .win { font-weight: 700; color: var(--good); }
+.controls button { margin: 0 6px 6px 0; }
+.controls .move { min-width: 130px; text-align: left; }
+.controls .move small { display: block; opacity: .8; font-size: 11px; }
+.google { display: inline-flex; align-items: center; gap: 8px; background: #fff; color: #1f1f1f; border: 1px solid #dadce0; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--border); color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+	<h1><a href="#/">Pokémon Showdown</a></h1>
+	<a href="#/ladder">Ladder</a>
+	<span id="account" class="row"></span>
+</header>
+<main id="app"><p class="muted">Loading…</p></main>
+<script>
+'use strict';
+const $app = document.getElementById('app');
+const $account = document.getElementById('account');
+let me = null;
+let config = { providers: {} };
+let formats = [];
+let socket = null;
+
+const h = (str) => String(str ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const toID = (str) => String(str ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+async function api(method, path, body) {
+	const res = await fetch(path, {
+		method,
+		headers: body ? { 'Content-Type': 'application/json' } : {},
+		body: body ? JSON.stringify(body) : undefined,
+		credentials: 'same-origin',
+	});
+	const data = await res.json().catch(() => ({}));
+	if (!res.ok) throw Object.assign(new Error(data.error || data.message || `HTTP ${res.status}`), { status: res.status });
+	return data;
+}
+
+async function loadMe() {
+	try {
+		me = await api('GET', '/api/me');
+	} catch (err) {
+		me = null;
+	}
+	renderAccount();
+}
+
+function renderAccount() {
+	if (!me) {
+		$account.innerHTML = '';
+		return;
+	}
+	$account.innerHTML = `
+		<span>${me.hasName ? `<strong>${h(me.name)}</strong>` : '<em>no name yet</em>'}</span>
+		<span class="badge">${me.guest ? 'guest' : h(me.email || 'signed in')}</span>
+		<button class="secondary" id="signout">Sign out</button>`;
+	document.getElementById('signout').onclick = async () => {
+		await api('POST', '/api/auth/sign-out', {});
+		me = null;
+		renderAccount();
+		route();
+	};
+}
+
+// Sign in
+
+function renderSignIn() {
+	const p = config.providers;
+	$app.innerHTML = `
+		<div class="panel" style="max-width:420px;margin:40px auto;text-align:center">
+			<h2>Sign in to battle</h2>
+			<p class="muted">Spectating and the ladder don't need an account.</p>
+			<div style="display:grid;gap:10px;margin-top:16px">
+				${p.google ? `<button class="google" id="google"><svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>Sign in with Google</button>` :
+					`<p class="muted">Google sign-in isn't configured on this server.</p>`}
+				<button class="secondary" id="guest">Play as guest <small class="muted">(unrated only)</small></button>
+			</div>
+			<p class="error" id="signin-error"></p>
+		</div>`;
+	const showError = err => { document.getElementById('signin-error').textContent = err.message; };
+	if (p.google) {
+		document.getElementById('google').onclick = async () => {
+			try {
+				const { url } = await api('POST', '/api/auth/sign-in/social', { provider: 'google', callbackURL: location.href });
+				location.href = url;
+			} catch (err) { showError(err); }
+		};
+	}
+	document.getElementById('guest').onclick = async () => {
+		try {
+			await api('POST', '/api/auth/sign-in/anonymous', {});
+			await loadMe();
+			route();
+		} catch (err) { showError(err); }
+	};
+}
+
+function renderChooseName() {
+	$app.innerHTML = `
+		<div class="panel" style="max-width:420px;margin:40px auto">
+			<h2>Choose your trainer name</h2>
+			<p class="muted">This is what opponents and the ladder will see. It can't be changed later.</p>
+			<form id="name-form" class="row">
+				<input id="name" maxlength="18" autocomplete="off" placeholder="Name" style="flex:1" required>
+				<button>Save</button>
+			</form>
+			<p class="error" id="name-error"></p>
+		</div>`;
+	document.getElementById('name-form').onsubmit = async e => {
+		e.preventDefault();
+		try {
+			await api('POST', '/api/users', { name: document.getElementById('name').value });
+			await loadMe();
+			route();
+		} catch (err) {
+			document.getElementById('name-error').textContent = err.message;
+		}
+	};
+}
+
+// Lobby
+
+async function renderLobby() {
+	if (!me) return renderSignIn();
+	if (!me.hasName) return renderChooseName();
+	if (!formats.length) formats = await api('GET', '/api/formats');
+	const sections = {};
+	for (const f of formats) (sections[f.section || 'Other'] ||= []).push(f);
+	$app.innerHTML = `
+		<div class="grid">
+			<div class="panel">
+				<h2>New battle</h2>
+				<form id="create">
+					<label>Format
+						<select id="format">${Object.entries(sections).map(([section, list]) =>
+							`<optgroup label="${h(section)}">${list.map(f => `<option value="${f.id}">${h(f.name)}</option>`).join('')}</optgroup>`).join('')}
+						</select>
+					</label>
+					<label id="team-label">Team (paste an export from the teambuilder)
+						<textarea id="team" spellcheck="false"></textarea>
+					</label>
+					<label>Opponent (optional — leave empty for an open challenge)
+						<input id="opponent" maxlength="18" autocomplete="off">
+					</label>
+					<label class="inline"><input type="checkbox" id="rated" ${me.guest ? 'disabled' : 'checked'}> Rated${me.guest ? ' (sign in with Google to play rated)' : ''}</label>
+					<button>Create battle</button>
+					<p class="error" id="create-error"></p>
+				</form>
+			</div>
+			<div class="panel">
+				<h2>Open challenges</h2>
+				<div id="open"><p class="muted">Loading…</p></div>
+				<h2 style="margin-top:20px">Your battles</h2>
+				<div id="mine"><p class="muted">Loading…</p></div>
+			</div>
+		</div>`;
+	const $format = document.getElementById('format');
+	const updateTeamField = () => {
+		const format = formats.find(f => f.id === $format.value);
+		document.getElementById('team-label').style.display = format?.team ? 'none' : '';
+	};
+	$format.value = localStorage.getItem('format') || 'gen9randombattle';
+	$format.onchange = () => {
+		try { localStorage.setItem('format', $format.value); } catch {}
+		updateTeamField();
+	};
+	updateTeamField();
+	document.getElementById('create').onsubmit = async e => {
+		e.preventDefault();
+		try {
+			const { id } = await api('POST', '/api/battles', {
+				format: $format.value,
+				team: document.getElementById('team').value || undefined,
+				opponent: document.getElementById('opponent').value || undefined,
+				rated: document.getElementById('rated').checked,
+			});
+			location.hash = `#/battle/${id}`;
+		} catch (err) {
+			document.getElementById('create-error').textContent = err.message;
+		}
+	};
+
+	const [open, mine] = await Promise.all([
+		api('GET', '/api/battles?status=waiting&limit=20'),
+		api('GET', `/api/battles?user=${me.userid}&limit=10`),
+	]);
+	const formatName = id => formats.find(f => f.id === id)?.name || id;
+	document.getElementById('open').innerHTML = open.length ? `<table>${open.map(b => `
+		<tr><td>${h(b.p1)}</td><td>${h(formatName(b.format))}${b.rated ? '' : ' <span class="badge">unrated</span>'}</td>
+		<td><a href="#/battle/${b.id}">${b.p1 === me.userid ? 'Open' : 'Join'}</a></td></tr>`).join('')}</table>` :
+		'<p class="muted">No one is waiting. Create a battle!</p>';
+	document.getElementById('mine').innerHTML = mine.length ? `<table>${mine.map(b => `
+		<tr><td>${h(formatName(b.format))}</td><td>vs ${h((b.p1 === me.userid ? b.p2 : b.p1) || '…')}</td>
+		<td>${b.status === 'ended' ? (b.winner === me.userid ? 'Won' : b.winner ? 'Lost' : 'Tie') : h(b.status)}</td>
+		<td><a href="#/battle/${b.id}">View</a></td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>';
+}
+
+// Ladder
+
+async function renderLadder(formatid) {
+	if (!formats.length) formats = await api('GET', '/api/formats');
+	formatid ||= 'gen9randombattle';
+	const rated = formats.filter(f => f.rated);
+	$app.innerHTML = `<div class="panel">
+		<div class="row" style="margin-bottom:12px"><h2 style="margin:0;flex:1">Ladder</h2>
+		<select id="ladder-format" style="width:auto">${rated.map(f => `<option value="${f.id}">${h(f.name)}</option>`).join('')}</select></div>
+		<div id="ladder"><p class="muted">Loading…</p></div></div>`;
+	const $select = document.getElementById('ladder-format');
+	$select.value = formatid;
+	$select.onchange = () => { location.hash = `#/ladder/${$select.value}`; };
+	const rows = await api('GET', `/api/ladder/${formatid}`);
+	document.getElementById('ladder').innerHTML = rows.length ? `<table>
+		<tr><th>#</th><th>Name</th><th>Elo</th><th>W</th><th>L</th><th>T</th></tr>
+		${rows.map((r, i) => `<tr><td>${i + 1}</td><td>${h(r.name || r.userid)}</td><td>${Math.round(r.elo)}</td><td>${r.w}</td><td>${r.l}</td><td>${r.t}</td></tr>`).join('')}
+		</table>` : '<p class="muted">No rated battles in this format yet.</p>';
+}
+
+// Battle
+
+function renderBattle(id) {
+	const state = { id, slot: null, request: null, choices: [], sent: false, ended: false, names: {}, active: {} };
+	$app.innerHTML = `
+		<div class="battle">
+			<div>
+				<div class="panel">
+					<div class="row" style="margin-bottom:10px"><h2 style="margin:0;flex:1" id="title">Battle</h2><span class="badge" id="status">connecting…</span></div>
+					<div class="field"><div class="mon" id="mon-p1"></div><div class="mon" id="mon-p2"></div></div>
+					<div class="log" id="log"></div>
+				</div>
+			</div>
+			<div>
+				<div class="panel controls" id="controls"></div>
+				<div class="panel">
+					<form id="chat" class="row"><input id="chat-input" placeholder="Chat" style="flex:1" autocomplete="off"><button>Send</button></form>
+				</div>
+			</div>
+		</div>`;
+	const $log = document.getElementById('log');
+	const $controls = document.getElementById('controls');
+	const $status = document.getElementById('status');
+
+	const addLog = (html, cls = '') => {
+		const atBottom = $log.scrollTop + $log.clientHeight >= $log.scrollHeight - 30;
+		const div = document.createElement('div');
+		div.className = cls;
+		div.innerHTML = html;
+		$log.appendChild(div);
+		if (atBottom) $log.scrollTop = $log.scrollHeight;
+	};
+	const side = ident => ident?.slice(0, 2);
+	const monName = ident => {
+		const name = h(ident?.replace(/^p\da?b?c?: /, '') ?? '');
+		if (!state.slot) return name;
+		return side(ident) === state.slot ? name : `the opposing ${name}`;
+	};
+	const hpPercent = cond => {
+		if (!cond || cond.endsWith(' fnt') || cond === '0') return 0;
+		const [cur, max] = cond.split(' ')[0].split('/').map(Number);
+		return max ? Math.round(cur / max * 100) : cur;
+	};
+	const renderActive = sideid => {
+		const mon = state.active[sideid];
+		const el = document.getElementById(`mon-${sideid}`);
+		if (!el) return;
+		const pct = mon ? hpPercent(mon.cond) : 0;
+		const color = pct > 50 ? 'var(--hp-high)' : pct > 20 ? 'var(--hp-mid)' : 'var(--hp-low)';
+		el.innerHTML = `<div class="muted">${h(state.names[sideid] || sideid)}${state.slot === sideid ? ' (you)' : ''}</div>` +
+			(mon ? `<div class="name">${h(mon.name)}</div><div class="muted">${h(mon.details)} · ${h(mon.cond)}</div>
+			<div class="hp"><div style="width:${pct}%;background:${color}"></div></div>` : '');
+	};
+	const updateMon = (ident, cond) => {
+		const sideid = side(ident);
+		if (state.active[sideid]) {
+			state.active[sideid].cond = cond;
+			renderActive(sideid);
+		}
+	};
+
+	const handlers = {
+		player(args) {
+			if (args[1]) state.names[args[0]] = args[1];
+			renderActive(args[0]);
+		},
+		title(args) { document.getElementById('title').textContent = args[0]; },
+		turn(args) { addLog(`Turn ${h(args[0])}`, 'turn'); },
+		switch(args) {
+			const sideid = side(args[0]);
+			state.active[sideid] = { name: args[0].replace(/^p\da?: /, ''), details: args[1], cond: args[2] };
+			renderActive(sideid);
+			addLog(sideid === state.slot ? `Go! ${monName(args[0])}!` : `${h(state.names[sideid] || sideid)} sent out ${h(args[0].replace(/^p\da?: /, ''))}!`);
+		},
+		move(args) { addLog(`${monName(args[0])} used <strong>${h(args[1])}</strong>!`); },
+		'-damage'(args) {
+			updateMon(args[0], args[1]);
+			const from = args.find(a => a.startsWith('[from]'));
+			addLog(`${monName(args[0])} ${from ? `was hurt (${h(from.slice(7))})` : 'took damage'} → ${hpPercent(args[1])}%`, 'minor');
+		},
+		'-heal'(args) { updateMon(args[0], args[1]); addLog(`${monName(args[0])} restored HP → ${hpPercent(args[1])}%`, 'minor'); },
+		'-sethp'(args) { updateMon(args[0], args[1]); },
+		faint(args) { updateMon(args[0], '0 fnt'); addLog(`${monName(args[0])} fainted!`); },
+		'-supereffective'() { addLog(`It's super effective!`, 'minor'); },
+		'-resisted'() { addLog(`It's not very effective…`, 'minor'); },
+		'-immune'(args) { addLog(`It doesn't affect ${monName(args[0])}…`, 'minor'); },
+		'-crit'() { addLog(`A critical hit!`, 'minor'); },
+		'-miss'(args) { addLog(`${monName(args[0])}'s attack missed!`, 'minor'); },
+		'-fail'(args) { addLog(`But it failed!`, 'minor'); },
+		'-status'(args) { addLog(`${monName(args[0])} is now ${h(args[1])}.`, 'minor'); },
+		'-curestatus'(args) { addLog(`${monName(args[0])} was cured of ${h(args[1])}.`, 'minor'); },
+		'-boost'(args) { addLog(`${monName(args[0])}'s ${h(args[1])} rose by ${h(args[2])}!`, 'minor'); },
+		'-unboost'(args) { addLog(`${monName(args[0])}'s ${h(args[1])} fell by ${h(args[2])}!`, 'minor'); },
+		'-weather'(args) { if (!args.some(a => a === '[upkeep]')) addLog(`Weather: ${h(args[0])}`, 'minor'); },
+		'-terastallize'(args) { addLog(`${monName(args[0])} terastallized into the ${h(args[1])} type!`); },
+		'-ability'(args) { addLog(`[${monName(args[0])}'s ${h(args[1])}]`, 'minor'); },
+		'-enditem'(args) { addLog(`${monName(args[0])}'s ${h(args[1])} was used up or removed.`, 'minor'); },
+		cant(args) { addLog(`${monName(args[0])} can't move (${h(args[1])}).`, 'minor'); },
+		'-message'(args) { addLog(h(args[0])); },
+		message(args) { addLog(h(args[0]), 'minor'); },
+		c(args) { addLog(`<strong>${h(args[0])}:</strong> ${h(args.slice(1).join('|'))}`, 'chat'); },
+		raw(args) { addLog(args.join('|')); },
+		error(args) { addLog(h(args.join('|')), 'error'); state.sent = false; renderControls(); },
+		teampreview() { addLog('Team preview', 'turn'); },
+		start() { addLog('Battle started!', 'turn'); },
+		win(args) { state.ended = true; addLog(`${h(args[0])} won the battle!`, 'win'); renderControls(); },
+		tie() { state.ended = true; addLog(`The battle ended in a tie.`, 'win'); renderControls(); },
+		request(args) {
+			const request = JSON.parse(args.join('|'));
+			state.waitingPanel = null;
+			state.request = request;
+			state.choices = [];
+			state.sent = false;
+			renderControls();
+		},
+	};
+	handlers.drag = handlers.switch;
+	handlers.replace = handlers.switch;
+
+	const handleLine = line => {
+		if (!line.startsWith('|')) return;
+		const [, cmd, ...args] = line.split('|');
+		if (cmd === 'request') return handlers.request(args);
+		handlers[cmd]?.(args);
+	};
+
+	function send(text) {
+		if (socket?.readyState === WebSocket.OPEN) socket.send(text);
+	}
+
+	function choose(choice) {
+		state.choices.push(choice);
+		const needed = choicesNeeded();
+		if (state.choices.length >= needed) {
+			send(`/choose ${state.choices.join(', ')}`);
+			state.sent = true;
+		}
+		renderControls();
+	}
+
+	function choicesNeeded() {
+		const r = state.request;
+		if (!r) return 0;
+		if (r.teamPreview) return 1;
+		if (r.forceSwitch) return r.forceSwitch.length;
+		return r.active?.length || 0;
+	}
+
+	function switchButtons(r, forPreview) {
+		const used = state.choices.map(c => c.split(' ')[1]);
+		return r.side.pokemon.map((mon, i) => {
+			const name = mon.ident.replace(/^p\d: /, '');
+			if (forPreview) return `<button class="secondary" data-choice="team ${i + 1}">${h(name)}</button>`;
+			const fainted = mon.condition.endsWith(' fnt');
+			const disabled = mon.active || fainted || used.includes(String(i + 1));
+			return `<button class="secondary" data-choice="switch ${i + 1}" ${disabled ? 'disabled' : ''}>${h(name)} <small class="muted">${h(mon.condition)}</small></button>`;
+		}).join('');
+	}
+
+	function renderControls() {
+		const r = state.request;
+		if (state.ended) {
+			$controls.innerHTML = `<h2>Battle over</h2><a href="#/">Back to lobby</a>`;
+			return;
+		}
+		if (state.waitingPanel && !r) return state.waitingPanel();
+		if (!state.slot) {
+			$controls.innerHTML = `<h2>Spectating</h2><p class="muted">You're watching this battle.</p>`;
+			return;
+		}
+		if (!r) {
+			$controls.innerHTML = `<h2>Waiting</h2><p class="muted">Waiting for the battle to start…</p>`;
+			return;
+		}
+		const forfeit = `<p style="margin-top:12px"><button class="danger" id="forfeit">Forfeit</button></p>`;
+		if (r.wait || state.sent) {
+			$controls.innerHTML = `<h2>Waiting for opponent…</h2>${state.sent ? `<button class="secondary" id="undo">Undo</button>` : ''}${forfeit}`;
+		} else if (r.teamPreview) {
+			$controls.innerHTML = `<h2>Choose your lead</h2>${switchButtons(r, true)}${forfeit}`;
+		} else if (r.forceSwitch) {
+			$controls.innerHTML = `<h2>Switch in</h2>${switchButtons(r)}${forfeit}`;
+		} else {
+			const index = state.choices.length;
+			const active = r.active[index];
+			const mon = r.side.pokemon.filter(p => p.active)[index];
+			const doubles = r.active.length > 1;
+			const targets = move => {
+				if (!doubles || !['normal', 'any', 'adjacentFoe'].includes(move.target)) return [''];
+				return [' 1', ' 2'];
+			};
+			const moveButtons = active.moves.map((move, i) => targets(move).map(t =>
+				`<button class="move" data-choice="move ${i + 1}${t}" ${move.disabled || move.pp === 0 ? 'disabled' : ''}>${h(move.move)}${t ? ` → foe ${t.trim()}` : ''}<small>${move.pp ?? '–'}/${move.maxpp ?? '–'} PP</small></button>`
+			).join('')).join('');
+			const gimmick = active.canTerastallize ? `<label class="inline"><input type="checkbox" id="gimmick" value="terastallize"> Terastallize (${h(active.canTerastallize)})</label>` :
+				active.canMegaEvo ? `<label class="inline"><input type="checkbox" id="gimmick" value="mega"> Mega Evolve</label>` : '';
+			const trapped = active.trapped || active.maybeTrapped;
+			$controls.innerHTML = `<h2>What will ${h(mon?.ident.replace(/^p\d: /, '') ?? 'your Pokémon')} do?</h2>
+				${moveButtons}${gimmick}
+				<h2 style="margin-top:12px">Switch</h2>${trapped ? '<p class="muted">Trapped!</p>' : switchButtons(r)}${forfeit}`;
+		}
+		for (const btn of $controls.querySelectorAll('[data-choice]')) {
+			btn.onclick = () => {
+				let choice = btn.dataset.choice;
+				const gimmick = document.getElementById('gimmick');
+				if (choice.startsWith('move') && gimmick?.checked) choice += ` ${gimmick.value}`;
+				choose(choice);
+			};
+		}
+		const undo = document.getElementById('undo');
+		if (undo) undo.onclick = () => { send('/undo'); state.sent = false; state.choices = []; renderControls(); };
+		const forfeitBtn = document.getElementById('forfeit');
+		if (forfeitBtn) forfeitBtn.onclick = () => { if (confirm('Forfeit this battle?')) send('/forfeit'); };
+	}
+
+	document.getElementById('chat').onsubmit = e => {
+		e.preventDefault();
+		const input = document.getElementById('chat-input');
+		if (input.value.trim()) send(input.value.replace(/^\//, '//'));
+		input.value = '';
+	};
+
+	async function connect() {
+		let battle;
+		try {
+			battle = await api('GET', `/api/battles/${id}`);
+		} catch (err) {
+			$app.innerHTML = `<div class="panel"><p class="error">${h(err.message)}</p><a href="#/">Back to lobby</a></div>`;
+			return;
+		}
+		if (battle.status === 'waiting' && me?.hasName && battle.p1 !== me.userid) {
+			const format = (formats.length ? formats : (formats = await api('GET', '/api/formats'))).find(f => f.id === battle.format);
+			state.waitingPanel = () => {
+				$controls.innerHTML = `<h2>Join this battle</h2>
+				<p class="muted">${h(battle.p1)} is waiting for an opponent in ${h(format?.name || battle.format)}${battle.rated ? ' (rated)' : ''}.</p>
+				${format?.team ? '' : '<label>Your team<textarea id="join-team" spellcheck="false"></textarea></label>'}
+				<button id="join">Join</button><p class="error" id="join-error"></p>`;
+				document.getElementById('join').onclick = async () => {
+					try {
+						await api('POST', `/api/battles/${id}/join`, { team: document.getElementById('join-team')?.value || undefined });
+						state.waitingPanel = null;
+						const old = socket;
+						socket = null;
+						old?.close();
+						reconnect();
+					} catch (err) {
+						document.getElementById('join-error').textContent = err.message;
+					}
+				};
+			};
+		} else if (battle.status === 'waiting' && battle.p1 === me?.userid) {
+			state.waitingPanel = () => {
+				$controls.innerHTML = `<h2>Waiting for an opponent</h2><p class="muted">Send them this link:</p>
+					<input readonly value="${h(location.href)}" onclick="this.select()">`;
+			};
+		}
+		renderControls();
+		openSocket();
+	}
+
+	function openSocket() {
+		const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+		socket = new WebSocket(`${proto}://${location.host}/api/battles/${id}/ws`);
+		const thisSocket = socket;
+		socket.onopen = () => { $status.textContent = 'live'; };
+		socket.onclose = () => {
+			if (socket !== thisSocket) return;
+			$status.textContent = 'disconnected';
+			if (!state.ended && location.hash === `#/battle/${id}`) setTimeout(() => { if (socket === thisSocket) reconnect(); }, 2000);
+		};
+		socket.onmessage = ({ data }) => {
+			for (const line of data.split('\n')) {
+				if (line.startsWith('|player|') && line.split('|').length === 4) {
+					// our own slot announcement on connect: |player|p1|Name
+					const [, , slot, name] = line.split('|');
+					if (me?.hasName && toID(name) === me.userid) state.slot = slot;
+				}
+				handleLine(line);
+			}
+			if (!state.request) renderControls();
+		};
+	}
+
+	function reconnect() {
+		$log.innerHTML = '';
+		state.request = null;
+		openSocket();
+	}
+
+	connect();
+}
+
+// Router
+
+async function route() {
+	if (socket) {
+		const old = socket;
+		socket = null;
+		old.close();
+	}
+	const [, page, arg] = location.hash.replace(/^#/, '').split('/');
+	try {
+		if (page === 'battle' && arg) return renderBattle(arg);
+		if (page === 'ladder') return await renderLadder(arg);
+		return await renderLobby();
+	} catch (err) {
+		$app.innerHTML = `<div class="panel"><p class="error">${h(err.message)}</p></div>`;
+	}
+}
+
+window.addEventListener('hashchange', route);
+(async () => {
+	config = await api('GET', '/api/config').catch(() => config);
+	await loadMe();
+	route();
+})();
+</script>
+</body>
+</html>

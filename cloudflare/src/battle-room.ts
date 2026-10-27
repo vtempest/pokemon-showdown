@@ -15,7 +15,8 @@
  *   - `/choose <choice>` (e.g. `/choose move 1`, `/choose switch 3`)
  *   - `/undo`
  *   - `/forfeit`
- *   - anything else is sent to the room as chat (logged-in users only)
+ *   - anything else is sent to the room as chat (signed-in users only;
+ *     start with `//` to send a message that begins with `/`)
  */
 
 import { DurableObject } from 'cloudflare:workers';
@@ -47,9 +48,11 @@ interface RoomState {
 	ended: boolean;
 }
 
-export interface Viewer {
+export interface Player {
 	userid: string;
 	name: string;
+	/** Guests (anonymous sessions) can't play rated battles */
+	guest: boolean;
 }
 
 interface SocketAttachment {
@@ -77,7 +80,7 @@ export class BattleRoom extends DurableObject<Env> {
 	// RPC methods, called by the Worker
 
 	async create(options: {
-		id: string, formatid: string, rated: boolean, player: Viewer, team: unknown, invited: string | null,
+		id: string, formatid: string, rated: boolean, player: Player, team: unknown, invited: string | null,
 	}): Promise<Result<RoomState['players']>> {
 		if (this.state) return { ok: false, error: `Battle ${options.id} already exists.` };
 		const format = getFormat(options.formatid);
@@ -88,10 +91,10 @@ export class BattleRoom extends DurableObject<Env> {
 		this.state = {
 			id: options.id,
 			formatid: format.value.id,
-			rated: options.rated && format.value.rated !== false,
+			rated: options.rated && !options.player.guest && format.value.rated !== false,
 			seed: PRNG.generateSeed(),
 			invited: options.invited,
-			players: { p1: { ...options.player, team: team.value } },
+			players: { p1: { userid: options.player.userid, name: options.player.name, team: team.value } },
 			inputLog: [],
 			ended: false,
 		};
@@ -102,7 +105,7 @@ export class BattleRoom extends DurableObject<Env> {
 		return { ok: true, value: this.publicPlayers() };
 	}
 
-	async join(player: Viewer, team: unknown): Promise<Result<RoomState['players']>> {
+	async join(player: Player, team: unknown): Promise<Result<RoomState['players']>> {
 		const state = this.state;
 		if (!state) return { ok: false, error: `Battle not found.` };
 		if (state.players.p2) return { ok: false, error: `This battle already has two players.` };
@@ -110,13 +113,17 @@ export class BattleRoom extends DurableObject<Env> {
 		if (state.invited && state.invited !== player.userid) {
 			return { ok: false, error: `This battle is reserved for another player.` };
 		}
+		if (state.rated && player.guest) {
+			return { ok: false, error: `Rated battles need a signed-in account; guests can only join unrated battles.` };
+		}
 		const format = getFormat(state.formatid);
 		if (!format.ok) return format;
 		const prepared = prepareTeam(format.value, team);
 		if (!prepared.ok) return prepared;
 
-		state.players.p2 = { ...player, team: prepared.value };
+		state.players.p2 = { userid: player.userid, name: player.name, team: prepared.value };
 		await startBattle(this.env.DB, state.id, player.userid);
+		this.broadcastAll(`|title|${this.title()}`);
 		this.startBattle();
 		await this.flush();
 		return { ok: true, value: this.publicPlayers() };
@@ -177,7 +184,9 @@ export class BattleRoom extends DurableObject<Env> {
 		const text = message.trim();
 		if (!text) return;
 
-		const [command, rest] = text.startsWith('/') ? splitFirst(text.slice(1), ' ') : ['', text];
+		// `//text` is chat that starts with a slash
+		const isCommand = text.startsWith('/') && !text.startsWith('//');
+		const [command, rest] = isCommand ? splitFirst(text.slice(1), ' ') : ['', text.replace(/^\/\//, '/')];
 		if (['choose', 'undo', 'forfeit'].includes(command)) {
 			if (!slot) return ws.send(`|error|You are not a player in this battle.`);
 			if (!battle || this.state!.ended) return ws.send(`|error|The battle isn't running.`);
@@ -194,7 +203,7 @@ export class BattleRoom extends DurableObject<Env> {
 		} else {
 			if (!name) return ws.send(`|error|You must be logged in to chat.`);
 			if (!battle) return;
-			const chat = text.slice(0, MAX_CHAT_LENGTH).replace(/\n/g, ' ');
+			const chat = rest.slice(0, MAX_CHAT_LENGTH).replace(/\n/g, ' ');
 			battle.add('c', name, chat);
 			battle.inputLog.push(`>chat-inputlogonly ${name}|${chat}`);
 		}

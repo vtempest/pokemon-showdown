@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node build.mjs",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy && wrangler d1 migrations apply pokemon-showdown --remote",
     "migrate:local": "wrangler d1 migrations apply pokemon-showdown --local",
     "migrate:remote": "wrangler d1 migrations apply pokemon-showdown --remote",
     "tsc": "tsc -p .",
@@ -18,5 +18,8 @@
     "mocha": "^11.7.1",
     "typescript": "^5.8.3",
     "wrangler": "^4.150.0"
+  },
+  "dependencies": {
+    "better-auth": "^1.7.14"
   }
 }

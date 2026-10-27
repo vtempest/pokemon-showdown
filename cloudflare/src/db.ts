@@ -42,17 +42,17 @@ export interface RatingChange {
 	newElo: number;
 }
 
-/** Returns false if the userid is taken */
-export async function createUser(db: D1Database, userid: string, name: string, tokenHash: string) {
+/** Returns false if the userid is taken, or the account already has a name */
+export async function createUser(db: D1Database, userid: string, name: string, authUserId: string) {
 	const result = await db.prepare(
-		`INSERT INTO users (userid, name, token_hash, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (userid) DO NOTHING`
-	).bind(userid, name, tokenHash, Date.now()).run();
+		`INSERT INTO users (userid, name, auth_user_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`
+	).bind(userid, name, authUserId, Date.now()).run();
 	return result.meta.changes > 0;
 }
 
-export function getUserByTokenHash(db: D1Database, tokenHash: string) {
-	return db.prepare(`SELECT userid, name, created_at FROM users WHERE token_hash = ?`)
-		.bind(tokenHash).first<UserRow>();
+export function getUserByAuthId(db: D1Database, authUserId: string) {
+	return db.prepare(`SELECT userid, name, created_at FROM users WHERE auth_user_id = ?`)
+		.bind(authUserId).first<UserRow>();
 }
 
 export async function insertBattle(
