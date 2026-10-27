@@ -1,0 +1,22 @@
+{
+  "name": "pokemon-showdown-cloudflare",
+  "private": true,
+  "description": "Pokémon Showdown battle simulator running on Cloudflare Workers, Durable Objects and D1",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply pokemon-showdown --local",
+    "migrate:remote": "wrangler d1 migrations apply pokemon-showdown --remote",
+    "tsc": "tsc -p .",
+    "test": "mocha"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261023.1",
+    "esbuild": "^0.25.0",
+    "mocha": "^11.7.1",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.150.0"
+  }
+}

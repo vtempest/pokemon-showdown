@@ -1,0 +1,31 @@
+# Builds the Cloudflare Workers adaptation (cloudflare/) and runs its
+# end-to-end tests against a local workerd + Durable Objects + D1.
+
+name: Cloudflare Worker
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/setup-node@v6
+      with:
+        node-version: '22.x'
+        cache: 'npm'
+        cache-dependency-path: cloudflare/package-lock.json
+
+    - run: npm ci
+    - run: npm run tsc
+    - run: npm test
+      env:
+        CI: true

@@ -47,12 +47,14 @@ Documentation quick links
 * [CONTRIBUTING.md][6] - Useful code standards to understand if you want to send pull requests to PS (not necessary if you're just using the code and not planning to contribute back).
 * [ARCHITECTURE.md][7] - A high-level overview of how the code works.
 * [Bot FAQ][8] - An FAQ compiled by Kaiepi regarding making Pokemon Showdown bots - mainly chatbots and battle bots.
+* [cloudflare/README.md][cf] - Running the battle simulator on Cloudflare Workers, Durable Objects and D1.
 
   [4]: ./PROTOCOL.md
   [5]: ./sim/SIM-PROTOCOL.md
   [6]: ./CONTRIBUTING.md
   [7]: ./ARCHITECTURE.md
   [8]: https://gist.github.com/Kaiepi/becc5d0ecd576f5e7733b57b4e3fa97e
+  [cf]: ./cloudflare/README.md
 
 
 Community

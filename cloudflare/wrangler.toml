@@ -1,0 +1,40 @@
+# Pokémon Showdown on Cloudflare Workers + Durable Objects + D1
+# See README.md for setup.
+
+name = "pokemon-showdown"
+main = "dist/worker.js"
+compatibility_date = "2026-10-01"
+# The simulator uses node:path; everything else is shimmed at build time
+compatibility_flags = ["nodejs_compat"]
+
+# build.mjs bundles the simulator (wrangler's bundler can't resolve its dynamic requires)
+no_bundle = true
+[build]
+command = "node build.mjs"
+watch_dir = ["src", "../sim", "../data", "../config", "../lib"]
+
+[[rules]]
+type = "ESModule"
+globs = ["**/*.js"]
+
+[limits]
+# Loading formats and validating teams is CPU-heavy on a cold start
+cpu_ms = 30000
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pokemon-showdown"
+# Replace with the id printed by `wrangler d1 create pokemon-showdown`
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "BATTLES"
+class_name = "BattleRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BattleRoom"]
+
+[observability]
+enabled = true

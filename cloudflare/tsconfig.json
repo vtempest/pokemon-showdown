@@ -1,0 +1,19 @@
+{
+	"compilerOptions": {
+		"target": "es2022",
+		"lib": ["es2023"],
+		"module": "es2022",
+		"moduleResolution": "bundler",
+		"types": ["@cloudflare/workers-types", "node"],
+		"strict": true,
+		"noEmit": true,
+		"skipLibCheck": true,
+		"allowJs": true,
+		"checkJs": false,
+		"esModuleInterop": true,
+		"noImplicitOverride": true,
+		"useDefineForClassFields": false,
+		"forceConsistentCasingInFileNames": true
+	},
+	"include": ["src/**/*.ts", "../sim/global-types.ts"]
+}
